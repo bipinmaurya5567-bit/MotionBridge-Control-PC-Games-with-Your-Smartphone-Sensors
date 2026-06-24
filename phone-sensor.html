@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Motion Sensor Stream</title>
+  <!-- 
+       NOTE: This page works on any Android phone running Chrome (not device-specific)
+       as long as the device has standard accelerometer and gyroscope sensors (e.g. Poco M4 Pro, Realme 7).
+  -->
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0a1a;
+      color: #e0e0ff;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px;
+      gap: 14px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #a78bfa;
+      letter-spacing: 0.04em;
+      margin-top: 10px;
+    }
+
+    /* ── Status pill ── */
+    #status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      border-radius: 99px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      transition: background 0.3s, color 0.3s;
+    }
+    #status-pill.disconnected { background: #3b1f1f; color: #f87171; }
+    #status-pill.connecting   { background: #3b3010; color: #fbbf24; }
+    #status-pill.connected    { background: #1a3a2a; color: #34d399; }
+    #status-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    #status-pill.connected #status-dot { animation: pulse 1.2s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ── Data cards ── */
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: #13132a;
+      border: 1px solid #2a2a4a;
+      border-radius: 14px;
+      padding: 14px 18px;
+    }
+    .card-title {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #7c6fe0;
+      margin-bottom: 10px;
+    }
+    .axis-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .axis-label {
+      font-size: 0.85rem;
+      color: #888aaa;
+      width: 28px;
+    }
+    .axis-bar-bg {
+      flex: 1;
+      height: 8px;
+      background: #1e1e3a;
+      border-radius: 99px;
+      margin: 0 10px;
+      overflow: hidden;
+    }
+    .axis-bar {
+      height: 100%;
+      border-radius: 99px;
+      width: 50%;          /* 50% = zero; shifts left or right */
+      transform-origin: left;
+      transition: width 0.05s, background 0.1s;
+    }
+    .axis-val {
+      font-size: 0.85rem;
+      font-variant-numeric: tabular-nums;
+      width: 60px;
+      text-align: right;
+      color: #c4c4f0;
+    }
+    /* bar colours per axis */
+    .ax { background: #f87171; }
+    .ay { background: #34d399; }
+    .az { background: #60a5fa; }
+    .ra { background: #f59e0b; }
+    .rb { background: #a78bfa; }
+    .rg { background: #f472b6; }
+
+    /* ── Log box ── */
+    #log {
+      width: 100%;
+      max-width: 420px;
+      background: #0d0d1e;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.72rem;
+      font-family: monospace;
+      color: #7878aa;
+      height: 110px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+
+    /* ── Buttons ── */
+    button {
+      padding: 12px 28px;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    button:active { transform: scale(0.96); }
+    #btn-connect {
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      color: #fff;
+      box-shadow: 0 4px 20px #7c3aed55;
+    }
+    #btn-disconnect {
+      background: #3b1f1f;
+      color: #f87171;
+      display: none;
+    }
+
+    #hz-display {
+      font-size: 0.78rem;
+      color: #555577;
+    }
+  </style>
+</head>
+<body>
+
+<h1>🎮 Motion Controller</h1>
+
+<!-- ══════════════════════════════════════════════
+     ▶  EDIT THIS — your laptop's local IP address
+     ══════════════════════════════════════════════ -->
+<script>
+  const LAPTOP_IP   = "10.55.168.79";   // ← Your laptop's Wi-Fi IP (from ipconfig)
+  const WS_PORT     = 8765;
+  const TARGET_HZ   = 60;               // sensor poll frequency (ms interval = 1000/TARGET_HZ)
+</script>
+<!-- ════════════════════════════════════════════ -->
+
+<div id="status-pill" class="disconnected">
+  <div id="status-dot"></div>
+  <span id="status-text">Disconnected</span>
+</div>
+
+<!-- Acceleration card -->
+<div class="card">
+  <div class="card-title">Linear Acceleration (m/s²)</div>
+  <div class="axis-row">
+    <span class="axis-label">X</span>
+    <div class="axis-bar-bg"><div class="axis-bar ax" id="bar-ax"></div></div>
+    <span class="axis-val" id="val-ax">—</span>
+  </div>
+  <div class="axis-row">
+    <span class="axis-label">Y</span>
+    <div class="axis-bar-bg"><div class="axis-bar ay" id="bar-ay"></div></div>
+    <span class="axis-val" id="val-ay">—</span>
+  </div>
+  <div class="axis-row">
+    <span class="axis-label">Z</span>
+    <div class="axis-bar-bg"><div class="axis-bar az" id="bar-az"></div></div>
+    <span class="axis-val" id="val-az">—</span>
+  </div>
+</div>
+
+<!-- Rotation card -->
+<div class="card">
+  <div class="card-title">Rotation Rate (°/s)</div>
+  <div class="axis-row">
+    <span class="axis-label">α</span>
+    <div class="axis-bar-bg"><div class="axis-bar ra" id="bar-ra"></div></div>
+    <span class="axis-val" id="val-ra">—</span>
+  </div>
+  <div class="axis-row">
+    <span class="axis-label">β</span>
+    <div class="axis-bar-bg"><div class="axis-bar rb" id="bar-rb"></div></div>
+    <span class="axis-val" id="val-rb">—</span>
+  </div>
+  <div class="axis-row">
+    <span class="axis-label">γ</span>
+    <div class="axis-bar-bg"><div class="axis-bar rg" id="bar-rg"></div></div>
+    <span class="axis-val" id="val-rg">—</span>
+  </div>
+</div>
+
+<span id="hz-display">— Hz  |  packets sent: 0</span>
+
+<button id="btn-connect"    onclick="startStreaming()">Connect &amp; Stream</button>
+<button id="btn-disconnect" onclick="stopStreaming()">Disconnect</button>
+
+<div id="log"></div>
+
+<script>
+// ══════════════════════════════
+//  Globals
+// ══════════════════════════════
+let ws            = null;
+let sensorTimer   = null;
+let latestReading = null;
+let packetsSent   = 0;
+let lastHzCheck   = Date.now();
+let hzCounter     = 0;
+
+// ── DOM refs ──
+const pill       = document.getElementById("status-pill");
+const statusText = document.getElementById("status-text");
+const logEl      = document.getElementById("log");
+const hzDisplay  = document.getElementById("hz-display");
+const btnConn    = document.getElementById("btn-connect");
+const btnDisc    = document.getElementById("btn-disconnect");
+
+// ══════════════════════════════
+//  Logging
+// ══════════════════════════════
+function log(msg, color) {
+  const line = document.createElement("div");
+  line.style.color = color || "#7878aa";
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.prepend(line);
+  while (logEl.children.length > 40) logEl.removeChild(logEl.lastChild);
+}
+
+// ══════════════════════════════
+//  Status helpers
+// ══════════════════════════════
+function setStatus(state, text) {
+  pill.className = state;
+  statusText.textContent = text;
+}
+
+// ══════════════════════════════
+//  Sensor reading → store latest
+// ══════════════════════════════
+function onDeviceMotion(event) {
+  const acc = event.accelerationIncludingGravity || event.acceleration || {};
+  const rot = event.rotationRate || {};
+  latestReading = {
+    t:  Date.now(),
+    ax: acc.x ?? 0,
+    ay: acc.y ?? 0,
+    az: acc.z ?? 0,
+    ra: rot.alpha ?? 0,
+    rb: rot.beta  ?? 0,
+    rg: rot.gamma ?? 0,
+  };
+  updateDisplay(latestReading);
+}
+
+// ══════════════════════════════
+//  Visual display update
+// ══════════════════════════════
+const MAX_ACC = 20;   // m/s² — clamp range for bar display
+const MAX_ROT = 360;  // °/s  — clamp range for bar display
+
+function barPercent(val, max) {
+  // Maps [-max, +max] → [0%, 100%], centre = 50%
+  const clamped = Math.max(-max, Math.min(max, val));
+  return 50 + (clamped / max) * 50;
+}
+
+function updateDisplay(r) {
+  document.getElementById("val-ax").textContent = r.ax.toFixed(2);
+  document.getElementById("val-ay").textContent = r.ay.toFixed(2);
+  document.getElementById("val-az").textContent = r.az.toFixed(2);
+  document.getElementById("val-ra").textContent = r.ra.toFixed(1);
+  document.getElementById("val-rb").textContent = r.rb.toFixed(1);
+  document.getElementById("val-rg").textContent = r.rg.toFixed(1);
+
+  document.getElementById("bar-ax").style.width = barPercent(r.ax, MAX_ACC) + "%";
+  document.getElementById("bar-ay").style.width = barPercent(r.ay, MAX_ACC) + "%";
+  document.getElementById("bar-az").style.width = barPercent(r.az, MAX_ACC) + "%";
+  document.getElementById("bar-ra").style.width = barPercent(r.ra, MAX_ROT) + "%";
+  document.getElementById("bar-rb").style.width = barPercent(r.rb, MAX_ROT) + "%";
+  document.getElementById("bar-rg").style.width = barPercent(r.rg, MAX_ROT) + "%";
+}
+
+// ══════════════════════════════
+//  WebSocket send loop
+// ══════════════════════════════
+function startSendLoop() {
+  const intervalMs = Math.round(1000 / TARGET_HZ);
+  sensorTimer = setInterval(() => {
+    if (!latestReading || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(latestReading));
+    packetsSent++;
+    hzCounter++;
+
+    // Update Hz estimate every second
+    const now = Date.now();
+    if (now - lastHzCheck >= 1000) {
+      const hz = hzCounter;
+      hzCounter = 0;
+      lastHzCheck = now;
+      hzDisplay.textContent = `${hz} Hz  |  packets sent: ${packetsSent}`;
+    }
+  }, intervalMs);
+}
+
+// ══════════════════════════════
+//  Request permission (iOS 13+)
+//  Android Chrome doesn't need it
+// ══════════════════════════════
+async function requestSensorPermission() {
+  if (typeof DeviceMotionEvent === "undefined") {
+    log("DeviceMotionEvent not available on this browser.", "#f87171");
+    return false;
+  }
+  if (typeof DeviceMotionEvent.requestPermission === "function") {
+    // iOS 13+ only
+    try {
+      const result = await DeviceMotionEvent.requestPermission();
+      if (result !== "granted") {
+        log("Motion permission denied.", "#f87171");
+        return false;
+      }
+      log("iOS motion permission granted.", "#34d399");
+    } catch (e) {
+      log("Permission error: " + e, "#f87171");
+      return false;
+    }
+  }
+  return true;
+}
+
+// ══════════════════════════════
+//  Main connect flow
+// ══════════════════════════════
+async function startStreaming() {
+  // 1. Request sensor permission
+  const ok = await requestSensorPermission();
+  if (!ok) return;
+
+  // 2. Attach sensor listener
+  window.addEventListener("devicemotion", onDeviceMotion);
+  log("Sensor listener attached.", "#60a5fa");
+
+  // 3. Open WebSocket
+  const url = `ws://${LAPTOP_IP}:${WS_PORT}`;
+  log(`Connecting to ${url} …`, "#fbbf24");
+  setStatus("connecting", "Connecting…");
+
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    log("WebSocket error: " + e, "#f87171");
+    setStatus("disconnected", "Error");
+    return;
+  }
+
+  ws.onopen = () => {
+    log("WebSocket connected ✓", "#34d399");
+    setStatus("connected", "Streaming");
+    btnConn.style.display = "none";
+    btnDisc.style.display = "inline-block";
+    startSendLoop();
+  };
+
+  ws.onclose = (ev) => {
+    log(`Disconnected (code ${ev.code})`, "#f87171");
+    setStatus("disconnected", "Disconnected");
+    cleanup();
+  };
+
+  ws.onerror = () => {
+    log("WebSocket error — check IP/port and server.", "#f87171");
+    setStatus("disconnected", "Connection Error");
+  };
+}
+
+function stopStreaming() {
+  if (ws) ws.close();
+  cleanup();
+}
+
+function cleanup() {
+  clearInterval(sensorTimer);
+  sensorTimer = null;
+  window.removeEventListener("devicemotion", onDeviceMotion);
+  btnConn.style.display = "inline-block";
+  btnDisc.style.display = "none";
+}
+
+// ══════════════════════════════
+//  Warn if no HTTPS / not served
+// ══════════════════════════════
+if (location.protocol === "file:") {
+  log("⚠ Opened as file:// — serve via HTTP instead (sensors may not work).", "#fbbf24");
+}
+</script>
+</body>
+</html>
